@@ -976,7 +976,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	bindFlags := commonFlags | unix.MS_NODEV
 	devFlags := commonFlags | unix.MS_NOEXEC | unix.MS_NOSUID | unix.MS_RDONLY
 	procFlags := devFlags | unix.MS_NODEV
-	sysFlags := devFlags | unix.MS_NODEV | unix.MS_RDONLY
+	sysFlags := devFlags | unix.MS_NODEV
 
 	// Bind /dev read-only.
 	subDev := filepath.Join(spec.Root.Path, "/dev")
@@ -1017,26 +1017,25 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	}
 	logrus.Debugf("bind mounted %q to %q", "/proc", filepath.Join(spec.Root.Path, "/proc"))
 
-	// Bind /sys read-only.
-	subSys := filepath.Join(spec.Root.Path, "/sys")
-	if err := unix.Mount("/sys", subSys, "bind", sysFlags, ""); err != nil {
-		if os.IsNotExist(err) {
-			err = os.Mkdir(subSys, 0700)
-			if err == nil {
-				err = unix.Mount("/sys", subSys, "bind", sysFlags, "")
-			}
+	mnts, _ := mount.GetMounts()
+	for _, m := range mnts {
+		if !strings.HasPrefix(m.Mountpoint, "/sys/") &&
+			m.Mountpoint != "/sys" {
+			continue
 		}
-		if err != nil {
+		subSys := filepath.Join(spec.Root.Path, m.Mountpoint)
+		fmt.Println("DAN1", m.Mountpoint, subSys)
+		if err := unix.Mount(m.Mountpoint, subSys, "bind", sysFlags, ""); err != nil {
 			return undoBinds, errors.Wrapf(err, "error bind mounting /sys from host into mount namespace")
 		}
-	}
-	// Make sure it's read-only.
-	if err = unix.Statfs(subSys, &fs); err != nil {
-		return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", subSys)
-	}
-	if fs.Flags&unix.ST_RDONLY == 0 {
-		if err := unix.Mount(subSys, subSys, "bind", sysFlags|unix.MS_REMOUNT, ""); err != nil {
-			return undoBinds, errors.Wrapf(err, "error remounting /sys in mount namespace read-only")
+		// Make sure it's read-only.
+		if err = unix.Statfs(subSys, &fs); err != nil {
+			return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", subSys)
+		}
+		if fs.Flags&unix.ST_RDONLY == 0 {
+			if err := unix.Mount(subSys, subSys, "bind", sysFlags|unix.MS_REMOUNT, ""); err != nil {
+				return undoBinds, errors.Wrapf(err, "error remounting /sys in mount namespace read-only")
+			}
 		}
 	}
 	logrus.Debugf("bind mounted %q to %q", "/sys", filepath.Join(spec.Root.Path, "/sys"))
@@ -1044,10 +1043,6 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	// Add /sys/fs/selinux to the set of masked paths, to ensure that we don't have processes
 	// attempting to interact with labeling, when they aren't allowed to do so.
 	spec.Linux.MaskedPaths = append(spec.Linux.MaskedPaths, "/sys/fs/selinux")
-	// Add /sys/fs/cgroup to the set of masked paths, to ensure that we don't have processes
-	// attempting to mess with cgroup configuration, when they aren't allowed to do so.
-	spec.Linux.MaskedPaths = append(spec.Linux.MaskedPaths, "/sys/fs/cgroup")
-
 	// Bind mount in everything we've been asked to mount.
 	for _, m := range spec.Mounts {
 		// Skip anything that we just mounted.
@@ -1143,7 +1138,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			logrus.Debugf("mounted a tmpfs to %q", target)
 		}
 		if err = unix.Statfs(target, &fs); err != nil {
-			return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", subSys)
+			return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", target)
 		}
 		if uintptr(fs.Flags)&expectedFlags != expectedFlags {
 			if err := unix.Mount(target, target, "bind", requestFlags|unix.MS_REMOUNT, ""); err != nil {
